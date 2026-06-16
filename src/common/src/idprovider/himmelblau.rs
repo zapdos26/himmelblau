@@ -26,6 +26,7 @@ use crate::config::IdAttr;
 use crate::constants::DEFAULT_APP_ID;
 use crate::constants::EDGE_BROWSER_CLIENT_ID;
 use crate::constants::ID_MAP_CACHE;
+use crate::constants::MICROSOFT_GRAPH_DEFAULT_SCOPE;
 use crate::db::KeyStoreTxn;
 use crate::idmap_cache::StaticIdCache;
 use crate::idprovider::common::build_online_probe_client;
@@ -1346,7 +1347,7 @@ impl IdProvider for HimmelblauProvider {
 
                 match app
                     .acquire_token_silent(
-                        vec!["00000003-0000-0000-c000-000000000000/.default"],
+                        vec![MICROSOFT_GRAPH_DEFAULT_SCOPE],
                         Some(tpm),
                 )
                 .await
@@ -1423,7 +1424,7 @@ impl IdProvider for HimmelblauProvider {
                 &credential.client_id,
                 credential.managed_identity_client_id.as_deref(),
                 &credential.resource,
-                vec!["00000003-0000-0000-c000-000000000000/.default"],
+                vec![MICROSOFT_GRAPH_DEFAULT_SCOPE],
             )
             .await
             {

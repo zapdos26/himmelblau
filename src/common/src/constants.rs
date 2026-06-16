@@ -39,6 +39,7 @@ pub const DEFAULT_SHELL: &str = "/bin/bash";
 pub const DEFAULT_ODC_PROVIDER: &str = "odc.officeapps.live.com";
 pub const DEFAULT_AUTHORITY_HOST: &str = "login.microsoftonline.com";
 pub const DEFAULT_GRAPH: &str = "https://graph.microsoft.com";
+pub const MICROSOFT_GRAPH_DEFAULT_SCOPE: &str = "00000003-0000-0000-c000-000000000000/.default";
 pub const DEFAULT_APP_ID: &str = "b743a22d-6705-4147-8670-d92fa515ee2b";
 pub const DRS_APP_ID: &str = "01cb2876-7ebd-4aa4-9cc9-d28bd4d359a9";
 /// Wall-clock timeout for an Intune policy-apply task, set to the

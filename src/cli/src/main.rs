@@ -46,7 +46,8 @@ use himmelblau_unix_common::constants::{
     CONFIDENTIAL_CLIENT_CERT_KEY_TAG, CONFIDENTIAL_CLIENT_CERT_TAG,
     CONFIDENTIAL_CLIENT_MANAGED_IDENTITY_TAG, CONFIDENTIAL_CLIENT_SECRET_TAG, DEFAULT_APP_ID,
     DEFAULT_CONFIG_PATH, DEFAULT_HSM_PIN_PATH_ENC, DEFAULT_ODC_PROVIDER, EDGE_BROWSER_CLIENT_ID,
-    ID_MAP_CACHE, INTUNE_POLICY_TASK_TIMEOUT_SECS, MAPPED_NAME_CACHE, NSS_CACHE,
+    ID_MAP_CACHE, INTUNE_POLICY_TASK_TIMEOUT_SECS, MAPPED_NAME_CACHE,
+    MICROSOFT_GRAPH_DEFAULT_SCOPE, NSS_CACHE,
 };
 use himmelblau_unix_common::db::{Cache, CacheTxn, Db, KeyStoreTxn};
 use himmelblau_unix_common::idmap_cache::{StaticGroup, StaticIdCache, StaticUser};
@@ -586,10 +587,7 @@ async fn confidential_client_access_token(
             }
         };
         if let Ok(token) = app
-            .acquire_token_silent(
-                vec!["00000003-0000-0000-c000-000000000000/.default"],
-                Some(&mut tpm),
-            )
+            .acquire_token_silent(vec![MICROSOFT_GRAPH_DEFAULT_SCOPE], Some(&mut tpm))
             .await
         {
             debug!("Proceeding with confidential client credentials...");
@@ -630,7 +628,7 @@ async fn confidential_client_access_token(
             &credential.client_id,
             credential.managed_identity_client_id.as_deref(),
             &credential.resource,
-            vec!["00000003-0000-0000-c000-000000000000/.default"],
+            vec![MICROSOFT_GRAPH_DEFAULT_SCOPE],
         )
         .await
         {
