@@ -1423,10 +1423,7 @@ async fn main() -> ExitCode {
             }
 
             if let Err(e) = db_txn.commit() {
-                error!(
-                    ?e,
-                    "Failed inserting managed identity credential into cache"
-                );
+                error!(?e, "Failed committing managed identity credential to cache");
                 return ExitCode::FAILURE;
             }
 

@@ -358,7 +358,7 @@ pub enum CredOpt {
         #[arg(long)]
         managed_identity_client_id: Option<String>,
         /// The token resource requested from IMDS for the FIC assertion.
-        #[arg(long, default_value_t = himmelblau_unix_common::constants::DEFAULT_MANAGED_IDENTITY_FIC_RESOURCE.to_string())]
+        #[arg(long, default_value = himmelblau_unix_common::constants::DEFAULT_MANAGED_IDENTITY_FIC_RESOURCE)]
         resource: String,
     },
     /// Delete confidential client credentials (secret, certificate, managed identity, or all)

@@ -17,10 +17,16 @@ use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use zeroize::{Zeroize, Zeroizing};
 
+/// Stored configuration for using an Azure managed identity as a Federated
+/// Identity Credential (FIC) assertion source for a confidential client.
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct ManagedIdentityCredential {
+    /// The Entra application client ID whose FIC trusts the managed identity.
     pub client_id: String,
+    /// The user-assigned managed identity client ID, or `None` to use the
+    /// system-assigned managed identity for the Azure host.
     pub managed_identity_client_id: Option<String>,
+    /// The managed identity token scope/resource used as the FIC assertion.
     pub resource: String,
 }
 
@@ -458,6 +464,13 @@ pub fn confidential_client_managed_identity<D: crate::db::KeyStoreTxn + Send>(
     Ok(None)
 }
 
+/// Acquires an access token for a confidential client using a managed identity FIC.
+///
+/// This first uses `azure_identity::ManagedIdentityCredential` to obtain a
+/// managed identity token for `resource`, then exchanges that token as a
+/// `client_assertion` in the client credentials flow for `client_id`.
+/// Failures can come from managed identity discovery/token acquisition, the
+/// confidential client token endpoint, or response parsing.
 pub async fn acquire_managed_identity_fic_token(
     client: &reqwest::Client,
     authority: &str,
