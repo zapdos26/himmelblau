@@ -17,6 +17,18 @@ use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use zeroize::{Zeroize, Zeroizing};
 
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct ManagedIdentityCredential {
+    pub client_id: String,
+    pub managed_identity_client_id: Option<String>,
+    pub resource: String,
+}
+
+#[derive(serde::Deserialize)]
+struct ManagedIdentityToken {
+    access_token: String,
+}
+
 /// Validates that the HSM PIN file path is within the expected directory
 fn validate_hsm_pin_path(hsm_pin_path: &str) -> Result<PathBuf, Box<dyn Error>> {
     let path = Path::new(hsm_pin_path);
@@ -418,4 +430,95 @@ pub fn confidential_client_creds<D: crate::db::KeyStoreTxn + Send>(
     }
 
     Ok(None)
+}
+
+pub fn confidential_client_managed_identity<D: crate::db::KeyStoreTxn + Send>(
+    hsm: &mut kanidm_hsm_crypto::provider::BoxedDynTpm,
+    keystore: &mut D,
+    machine_key: &kanidm_hsm_crypto::structures::StorageKey,
+    domain: &str,
+) -> Result<Option<ManagedIdentityCredential>, crate::idprovider::interface::IdpError> {
+    use crate::constants::CONFIDENTIAL_CLIENT_MANAGED_IDENTITY_TAG;
+    use crate::idprovider::interface::IdpError;
+
+    let tag = format!("{}/{}", domain, CONFIDENTIAL_CLIENT_MANAGED_IDENTITY_TAG);
+    if let Ok(Some(sealed_credential)) = keystore.get_tagged_hsm_key(&tag) {
+        let credential_info = hsm.unseal_data(machine_key, &sealed_credential).map_err(|e| {
+            error!(?e, "Failed unsealing managed identity credential");
+            IdpError::KeyStore
+        })?;
+        let credential: ManagedIdentityCredential =
+            serde_json::from_slice(&credential_info).map_err(|e| {
+                error!(?e, "Failed extracting managed identity credential from cache");
+                IdpError::KeyStore
+            })?;
+        return Ok(Some(credential));
+    }
+
+    Ok(None)
+}
+
+pub async fn acquire_managed_identity_fic_token(
+    client: &reqwest::Client,
+    authority: &str,
+    client_id: &str,
+    managed_identity_client_id: Option<&str>,
+    resource: &str,
+    scopes: Vec<&str>,
+) -> Result<himmelblau::ClientToken, himmelblau::error::MsalError> {
+    use himmelblau::error::{ErrorResponse, MsalError};
+    use std::collections::HashMap;
+
+    let mut mi_request = client
+        .get("http://169.254.169.254/metadata/identity/oauth2/token")
+        .header("Metadata", "true")
+        .query(&[("api-version", "2018-02-01"), ("resource", resource)]);
+    if let Some(managed_identity_client_id) = managed_identity_client_id {
+        mi_request = mi_request.query(&[("client_id", managed_identity_client_id)]);
+    }
+
+    let mi_resp = mi_request
+        .send()
+        .await
+        .map_err(|e| MsalError::RequestFailed(format!("{}", e)))?;
+    if !mi_resp.status().is_success() {
+        return Err(MsalError::RequestFailed(format!(
+            "Managed identity token request failed with status {}",
+            mi_resp.status()
+        )));
+    }
+    let mi_token: ManagedIdentityToken = mi_resp
+        .json()
+        .await
+        .map_err(|e| MsalError::InvalidJson(format!("{}", e)))?;
+
+    let url = format!("{}/oAuth2/v2.0/token", authority);
+    let mut params = HashMap::new();
+    let scope = scopes.join(" ");
+    params.insert("client_id", client_id);
+    params.insert("scope", scope.as_str());
+    params.insert("grant_type", "client_credentials");
+    params.insert("client_assertion", mi_token.access_token.as_str());
+    params.insert(
+        "client_assertion_type",
+        "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+    );
+
+    let resp = client
+        .post(url)
+        .form(&params)
+        .send()
+        .await
+        .map_err(|e| MsalError::RequestFailed(format!("{}", e)))?;
+    if resp.status().is_success() {
+        resp.json()
+            .await
+            .map_err(|e| MsalError::InvalidJson(format!("{}", e)))
+    } else {
+        let json_resp: ErrorResponse = resp
+            .json()
+            .await
+            .map_err(|e| MsalError::InvalidJson(format!("{}", e)))?;
+        Err(MsalError::AcquireTokenFailed(json_resp))
+    }
 }

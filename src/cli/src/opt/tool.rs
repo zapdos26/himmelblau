@@ -329,16 +329,48 @@ pub enum CredOpt {
         #[arg(long)]
         cert_out: String,
     },
-    /// Delete confidential client credentials (secret, certificate, or both)
+    /// Store a managed identity for confidential client authentication through
+    /// a Federated Identity Credential (FIC).
+    ///
+    /// Configure a Federated Identity Credential on the target Entra ID app
+    /// registration that trusts the managed identity, then store the target app
+    /// client ID here. On Azure hosts, Himmelblau will request a managed
+    /// identity token for `api://AzureADTokenExchange` and use it as the
+    /// client assertion for the confidential client.
+    ///
+    /// For a user-assigned managed identity, pass `--managed-identity-client-id`.
+    /// For a system-assigned managed identity, omit it.
+    ///
+    /// Example:
+    ///     aad-tool cred managed-identity --client-id <CLIENT_ID> --domain <DOMAIN>
+    ///     aad-tool cred managed-identity --client-id <CLIENT_ID> --domain <DOMAIN> --managed-identity-client-id <MI_CLIENT_ID>
+    #[command(verbatim_doc_comment)]
+    ManagedIdentity {
+        #[clap(short, long)]
+        debug: bool,
+        /// The Azure AD application (client) ID using the FIC.
+        #[arg(long)]
+        client_id: String,
+        /// The tenant domain this managed identity FIC is associated with.
+        #[arg(long)]
+        domain: String,
+        /// The user-assigned managed identity client ID. Omit for system-assigned identity.
+        #[arg(long)]
+        managed_identity_client_id: Option<String>,
+        /// The token resource requested from IMDS for the FIC assertion.
+        #[arg(long, default_value = "api://AzureADTokenExchange")]
+        resource: String,
+    },
+    /// Delete confidential client credentials (secret, certificate, managed identity, or all)
     ///
     /// This deletes stored confidential client credentials from Himmelblau's
-    /// encrypted cache. If neither `--secret` nor `--cert` is specified,
-    /// both will be deleted.
+    /// encrypted cache. If no credential kind is specified, all will be deleted.
     ///
     /// Example:
     ///     aad-tool cred delete --domain <DOMAIN>
     ///     aad-tool cred delete --domain <DOMAIN> --secret
     ///     aad-tool cred delete --domain <DOMAIN> --cert
+    ///     aad-tool cred delete --domain <DOMAIN> --managed-identity
     #[command(verbatim_doc_comment)]
     Delete {
         #[clap(short, long)]
@@ -352,11 +384,14 @@ pub enum CredOpt {
         /// Delete only the client certificate (not the secret).
         #[arg(long)]
         cert: bool,
+        /// Delete only the managed identity FIC credential.
+        #[arg(long)]
+        managed_identity: bool,
     },
     /// List the presence of confidential client credentials
     ///
     /// This checks Himmelblau's encrypted cache to see whether a client secret
-    /// and/or client certificate exists for the given domain.
+    /// client certificate, and/or managed identity FIC exists for the given domain.
     ///
     /// Example:
     ///     aad-tool cred list --domain <DOMAIN>

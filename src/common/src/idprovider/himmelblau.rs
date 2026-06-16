@@ -37,7 +37,10 @@ use crate::idprovider::common::PRT_REFRESH_AGE;
 use crate::idprovider::common::{BadPinCounter, RefreshCache};
 use crate::idprovider::interface::{tpm, UserTokenState};
 use crate::idprovider::openidconnect::OidcProvider;
-use crate::tpm::confidential_client_creds;
+use crate::tpm::{
+    acquire_managed_identity_fic_token, confidential_client_creds,
+    confidential_client_managed_identity,
+};
 use crate::unix_proto::PamAuthRequest;
 use crate::user_map::UserMap;
 use crate::{
@@ -1390,6 +1393,71 @@ impl IdProvider for HimmelblauProvider {
             confidential_client_creds(tpm, keystore, machine_key, &self.domain)
         {
             fetch_user_confidential_client!(&client_id, creds)
+        }
+
+        if let Ok(Some(credential)) =
+            confidential_client_managed_identity(tpm, keystore, machine_key, &self.domain)
+        {
+            let (authority_host, tenant_id, request_timeout) = {
+                let cfg = self.config.lock().await;
+                let authority_host = cfg.get_authority_host(&self.domain);
+                let tenant_id = cfg.get_tenant_id(&self.domain).ok_or_else(|| {
+                    error!("tenant_id not found");
+                    IdpError::BadRequest
+                })?;
+                let request_timeout = cfg.get_request_timeout();
+                (authority_host, tenant_id, request_timeout)
+            };
+            let authority = format!("https://{}/{}", authority_host, tenant_id);
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(request_timeout))
+                .build()
+                .map_err(|e| {
+                    error!(?e, "Failed initializing managed identity client");
+                    IdpError::BadRequest
+                })?;
+
+            match acquire_managed_identity_fic_token(
+                &client,
+                &authority,
+                &credential.client_id,
+                credential.managed_identity_client_id.as_deref(),
+                &credential.resource,
+                vec!["00000003-0000-0000-c000-000000000000/.default"],
+            )
+            .await
+            {
+                Ok(token) => {
+                    match self.graph.request_user(&token.access_token, &account_id).await {
+                        Ok(userobj) => {
+                            match self
+                                .user_token_from_unix_user_token(
+                                    &account_id,
+                                    TokenOrObj::UserObj((token, userobj)),
+                                    old_token,
+                                )
+                                .await
+                            {
+                                Ok(mut token) => {
+                                    if let Some(old_token) = old_token {
+                                        token.displayname.clone_from(&old_token.displayname)
+                                    }
+                                    return Ok(UserTokenState::Update(token));
+                                }
+                                Err(e) => {
+                                    error!(?e, "Failed to obtain token from user object using managed identity FIC");
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            error!(?e, "Failed to acquire user object from graph using managed identity FIC");
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!(?e, "Failed to acquire token silently using managed identity FIC");
+                }
+            }
         }
 
         let idmap_cache = StaticIdCache::new(ID_MAP_CACHE, false).map_err(|e| {

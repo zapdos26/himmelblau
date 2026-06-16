@@ -44,14 +44,18 @@ use himmelblau_unix_common::client::call_daemon;
 use himmelblau_unix_common::config::{parse_ttl_to_seconds, split_username, HimmelblauConfig};
 use himmelblau_unix_common::constants::{
     CONFIDENTIAL_CLIENT_CERT_KEY_TAG, CONFIDENTIAL_CLIENT_CERT_TAG, CONFIDENTIAL_CLIENT_SECRET_TAG,
-    DEFAULT_APP_ID, DEFAULT_CONFIG_PATH, DEFAULT_HSM_PIN_PATH_ENC, DEFAULT_ODC_PROVIDER,
+    CONFIDENTIAL_CLIENT_MANAGED_IDENTITY_TAG, DEFAULT_APP_ID, DEFAULT_CONFIG_PATH,
+    DEFAULT_HSM_PIN_PATH_ENC, DEFAULT_MANAGED_IDENTITY_FIC_RESOURCE, DEFAULT_ODC_PROVIDER,
     EDGE_BROWSER_CLIENT_ID, ID_MAP_CACHE, INTUNE_POLICY_TASK_TIMEOUT_SECS, MAPPED_NAME_CACHE,
     NSS_CACHE,
 };
 use himmelblau_unix_common::db::{Cache, CacheTxn, Db, KeyStoreTxn};
 use himmelblau_unix_common::idmap_cache::{StaticGroup, StaticIdCache, StaticUser};
 use himmelblau_unix_common::pam::{Options, PamResultCode};
-use himmelblau_unix_common::tpm::{confidential_client_creds, open_tpm};
+use himmelblau_unix_common::tpm::{
+    acquire_managed_identity_fic_token, confidential_client_creds,
+    confidential_client_managed_identity, ManagedIdentityCredential, open_tpm,
+};
 use himmelblau_unix_common::tpm_init;
 use himmelblau_unix_common::unix_config::HsmType;
 use himmelblau_unix_common::unix_proto::{ClientRequest, ClientResponse};
@@ -593,6 +597,53 @@ async fn confidential_client_access_token(
             return Some((domain, token.access_token.clone()));
         }
     }
+
+    if let Ok(Some(credential)) =
+        confidential_client_managed_identity(&mut tpm, &mut keystore, &machine_key, &domain)
+    {
+        if let Some(client_id) = client_id {
+            if client_id.to_lowercase() != credential.client_id.to_lowercase() {
+                debug!("Specified client_id does not match managed identity FIC client_id");
+                return None;
+            }
+        }
+        let authority_host = cfg.get_authority_host(&domain);
+        let tenant_id = match cfg.get_tenant_id(&domain) {
+            Some(tenant_id) => tenant_id,
+            None => "common".to_string(),
+        };
+        let authority = format!("https://{}/{}", authority_host, tenant_id);
+        let request_timeout = cfg.get_request_timeout();
+        let client = match reqwest::Client::builder()
+            .timeout(Duration::from_secs(request_timeout))
+            .build()
+        {
+            Ok(client) => client,
+            Err(e) => {
+                error!(?e, "Failed initializing managed identity client");
+                return None;
+            }
+        };
+
+        match acquire_managed_identity_fic_token(
+            &client,
+            &authority,
+            &credential.client_id,
+            credential.managed_identity_client_id.as_deref(),
+            &credential.resource,
+            vec!["00000003-0000-0000-c000-000000000000/.default"],
+        )
+        .await
+        {
+            Ok(token) => {
+                debug!("Proceeding with managed identity FIC credentials...");
+                return Some((domain, token.access_token.clone()));
+            }
+            Err(e) => {
+                error!(?e, "Failed acquiring token with managed identity FIC");
+            }
+        }
+    }
     None
 }
 
@@ -615,11 +666,19 @@ async fn main() -> ExitCode {
             domain: _,
             secret: _,
         }) => debug,
+        HimmelblauUnixOpt::Cred(CredOpt::ManagedIdentity {
+            debug,
+            client_id: _,
+            domain: _,
+            managed_identity_client_id: _,
+            resource: _,
+        }) => debug,
         HimmelblauUnixOpt::Cred(CredOpt::Delete {
             debug,
             domain: _,
             secret: _,
             cert: _,
+            managed_identity: _,
         }) => debug,
         HimmelblauUnixOpt::Cred(CredOpt::List { debug, domain: _ }) => debug,
         HimmelblauUnixOpt::Application(ApplicationOpt::List {
@@ -1291,11 +1350,91 @@ async fn main() -> ExitCode {
 
             ExitCode::SUCCESS
         }
+        HimmelblauUnixOpt::Cred(CredOpt::ManagedIdentity {
+            debug: _,
+            client_id,
+            domain,
+            managed_identity_client_id,
+            resource,
+        }) => {
+            debug!("Starting add-cred managed-identity tool ...");
+
+            if unsafe { libc::geteuid() } != 0 {
+                error!("This command must be run as root.");
+                return ExitCode::FAILURE;
+            }
+
+            let cfg = match HimmelblauConfig::new(Some(DEFAULT_CONFIG_PATH)) {
+                Ok(c) => c,
+                Err(_e) => {
+                    error!("Failed to parse {}", DEFAULT_CONFIG_PATH);
+                    return ExitCode::FAILURE;
+                }
+            };
+
+            let (auth_value, mut tpm) = tpm_init!(cfg, return ExitCode::FAILURE);
+
+            let db = match Db::new(&cfg.get_db_path()) {
+                Ok(db) => db,
+                Err(e) => {
+                    error!("Failed loading Himmelblau cache: {:?}", e);
+                    return ExitCode::FAILURE;
+                }
+            };
+
+            let loadable_machine_key =
+                tpm_loadable_machine_key!(db, tpm, auth_value, false, return ExitCode::FAILURE);
+            let machine_key = tpm_machine_key!(
+                tpm,
+                auth_value,
+                loadable_machine_key,
+                cfg,
+                return ExitCode::FAILURE
+            );
+
+            let credential = ManagedIdentityCredential {
+                client_id,
+                managed_identity_client_id,
+                resource,
+            };
+            let sealed_credential = match tpm.seal_data(
+                &machine_key,
+                match serde_json::to_vec(&credential) {
+                    Ok(credential) => credential,
+                    Err(e) => {
+                        error!(?e, "Failed serializing managed identity credential");
+                        return ExitCode::FAILURE;
+                    }
+                }
+                .into(),
+            ) {
+                Ok(sealed_credential) => sealed_credential,
+                Err(e) => {
+                    error!(?e, "Failed sealing managed identity credential");
+                    return ExitCode::FAILURE;
+                }
+            };
+
+            let mut db_txn = db.write().await;
+            let tag = format!("{}/{}", domain, CONFIDENTIAL_CLIENT_MANAGED_IDENTITY_TAG);
+            if let Err(e) = db_txn.insert_tagged_hsm_key(&tag, &sealed_credential) {
+                error!(?e, "Failed inserting managed identity credential into cache");
+                return ExitCode::FAILURE;
+            }
+
+            if let Err(e) = db_txn.commit() {
+                error!(?e, "Failed inserting managed identity credential into cache");
+                return ExitCode::FAILURE;
+            }
+
+            ExitCode::SUCCESS
+        }
         HimmelblauUnixOpt::Cred(CredOpt::Delete {
             debug: _,
             domain,
             secret,
             cert,
+            managed_identity,
         }) => {
             debug!("Starting cred delete tool ...");
 
@@ -1322,7 +1461,7 @@ async fn main() -> ExitCode {
 
             let mut db_txn = db.write().await;
 
-            if secret || !cert {
+            if secret || (!cert && !managed_identity) {
                 let secret_tag = format!("{}/{}", domain, CONFIDENTIAL_CLIENT_SECRET_TAG);
                 if let Err(e) = db_txn.delete_tagged_hsm_key(&secret_tag) {
                     error!(?e, "Failed deleting secret from cache");
@@ -1330,7 +1469,7 @@ async fn main() -> ExitCode {
                 }
             }
 
-            if cert || !secret {
+            if cert || (!secret && !managed_identity) {
                 let key_tag = format!("{}/{}", domain, CONFIDENTIAL_CLIENT_CERT_KEY_TAG);
                 if let Err(e) = db_txn.delete_tagged_hsm_key(&key_tag) {
                     error!(?e, "Failed deleting cert key from cache");
@@ -1339,6 +1478,14 @@ async fn main() -> ExitCode {
                 let cert_tag = format!("{}/{}", domain, CONFIDENTIAL_CLIENT_CERT_TAG);
                 if let Err(e) = db_txn.delete_tagged_hsm_key(&cert_tag) {
                     error!(?e, "Failed deleting cert from cache");
+                    return ExitCode::FAILURE;
+                }
+            }
+
+            if managed_identity || (!secret && !cert) {
+                let tag = format!("{}/{}", domain, CONFIDENTIAL_CLIENT_MANAGED_IDENTITY_TAG);
+                if let Err(e) = db_txn.delete_tagged_hsm_key(&tag) {
+                    error!(?e, "Failed deleting managed identity credential from cache");
                     return ExitCode::FAILURE;
                 }
             }
@@ -1393,6 +1540,14 @@ async fn main() -> ExitCode {
                 } else {
                     println!("Not present");
                 }
+            } else {
+                println!("Not present");
+            }
+
+            print!("Managed identity FIC: ");
+            let tag = format!("{}/{}", domain, CONFIDENTIAL_CLIENT_MANAGED_IDENTITY_TAG);
+            if let Ok(Some(_)) = db_txn.get_tagged_hsm_key::<SealedData>(&tag) {
+                println!("Present");
             } else {
                 println!("Not present");
             }
