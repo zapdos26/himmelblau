@@ -1428,7 +1428,11 @@ impl IdProvider for HimmelblauProvider {
             .await
             {
                 Ok(token) => {
-                    match self.graph.request_user(&token.access_token, &account_id).await {
+                    match self
+                        .graph
+                        .request_user(&token.access_token, &account_id)
+                        .await
+                    {
                         Ok(userobj) => {
                             match self
                                 .user_token_from_unix_user_token(
@@ -1455,7 +1459,10 @@ impl IdProvider for HimmelblauProvider {
                     }
                 }
                 Err(e) => {
-                    error!(?e, "Failed to acquire token silently using managed identity FIC");
+                    error!(
+                        ?e,
+                        "Failed to acquire token silently using managed identity FIC"
+                    );
                 }
             }
         }

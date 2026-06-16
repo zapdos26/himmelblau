@@ -58,6 +58,8 @@ hostname = "0.4.2"
 qrcodegen = "1.8.0"
 urlencoding = { workspace = true }
 zbus = "5.14"
+azure_identity = "1.0.0"
+azure_core = "1.0.0"
 
 [package.metadata.cargo-machete]
 ignored = ["libhimmelblau"]

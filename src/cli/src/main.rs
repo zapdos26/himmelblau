@@ -43,18 +43,17 @@ use himmelblau_unix_common::auth_handle_mfa_resp;
 use himmelblau_unix_common::client::call_daemon;
 use himmelblau_unix_common::config::{parse_ttl_to_seconds, split_username, HimmelblauConfig};
 use himmelblau_unix_common::constants::{
-    CONFIDENTIAL_CLIENT_CERT_KEY_TAG, CONFIDENTIAL_CLIENT_CERT_TAG, CONFIDENTIAL_CLIENT_SECRET_TAG,
-    CONFIDENTIAL_CLIENT_MANAGED_IDENTITY_TAG, DEFAULT_APP_ID, DEFAULT_CONFIG_PATH,
-    DEFAULT_HSM_PIN_PATH_ENC, DEFAULT_MANAGED_IDENTITY_FIC_RESOURCE, DEFAULT_ODC_PROVIDER,
-    EDGE_BROWSER_CLIENT_ID, ID_MAP_CACHE, INTUNE_POLICY_TASK_TIMEOUT_SECS, MAPPED_NAME_CACHE,
-    NSS_CACHE,
+    CONFIDENTIAL_CLIENT_CERT_KEY_TAG, CONFIDENTIAL_CLIENT_CERT_TAG,
+    CONFIDENTIAL_CLIENT_MANAGED_IDENTITY_TAG, CONFIDENTIAL_CLIENT_SECRET_TAG, DEFAULT_APP_ID,
+    DEFAULT_CONFIG_PATH, DEFAULT_HSM_PIN_PATH_ENC, DEFAULT_ODC_PROVIDER, EDGE_BROWSER_CLIENT_ID,
+    ID_MAP_CACHE, INTUNE_POLICY_TASK_TIMEOUT_SECS, MAPPED_NAME_CACHE, NSS_CACHE,
 };
 use himmelblau_unix_common::db::{Cache, CacheTxn, Db, KeyStoreTxn};
 use himmelblau_unix_common::idmap_cache::{StaticGroup, StaticIdCache, StaticUser};
 use himmelblau_unix_common::pam::{Options, PamResultCode};
 use himmelblau_unix_common::tpm::{
     acquire_managed_identity_fic_token, confidential_client_creds,
-    confidential_client_managed_identity, ManagedIdentityCredential, open_tpm,
+    confidential_client_managed_identity, open_tpm, ManagedIdentityCredential,
 };
 use himmelblau_unix_common::tpm_init;
 use himmelblau_unix_common::unix_config::HsmType;
@@ -558,7 +557,7 @@ async fn confidential_client_access_token(
     if let Ok(Some((cred_client_id, client_creds))) =
         confidential_client_creds(&mut tpm, &mut keystore, &machine_key, &domain)
     {
-        if let Some(client_id) = client_id {
+        if let Some(client_id) = &client_id {
             if client_id.to_lowercase() != cred_client_id.to_lowercase() {
                 debug!("Specified client_id does not match confidential client cred client_id");
                 return None;
@@ -601,7 +600,7 @@ async fn confidential_client_access_token(
     if let Ok(Some(credential)) =
         confidential_client_managed_identity(&mut tpm, &mut keystore, &machine_key, &domain)
     {
-        if let Some(client_id) = client_id {
+        if let Some(client_id) = &client_id {
             if client_id.to_lowercase() != credential.client_id.to_lowercase() {
                 debug!("Specified client_id does not match managed identity FIC client_id");
                 return None;
@@ -1418,12 +1417,18 @@ async fn main() -> ExitCode {
             let mut db_txn = db.write().await;
             let tag = format!("{}/{}", domain, CONFIDENTIAL_CLIENT_MANAGED_IDENTITY_TAG);
             if let Err(e) = db_txn.insert_tagged_hsm_key(&tag, &sealed_credential) {
-                error!(?e, "Failed inserting managed identity credential into cache");
+                error!(
+                    ?e,
+                    "Failed inserting managed identity credential into cache"
+                );
                 return ExitCode::FAILURE;
             }
 
             if let Err(e) = db_txn.commit() {
-                error!(?e, "Failed inserting managed identity credential into cache");
+                error!(
+                    ?e,
+                    "Failed inserting managed identity credential into cache"
+                );
                 return ExitCode::FAILURE;
             }
 
